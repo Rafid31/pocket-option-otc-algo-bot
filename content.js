@@ -1,5 +1,5 @@
-// Pocket Option OTC Algo Trading Bot - Content Script (ENHANCED v1.2)
-console.log('🚀 OTC Algo Bot loaded - v1.2 ENHANCED');
+// Pocket Option OTC Algo Trading Bot - Content Script (ENHANCED v1.3)
+console.log('🚀 OTC Algo Bot loaded - v1.3 ENHANCED');
 
 let botActive = false;
 let priceHistory = [];
@@ -8,6 +8,7 @@ let intervalId = null;
 let lastPrice = null;
 let priceFailCount = 0;
 
+// Listen for messages from popup or background
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startBot') {
     botActive = true;
@@ -62,49 +63,28 @@ function stopBotLoop() {
 }
 
 function getCurrentPrice() {
-  // Strategy 1: Look for price in chart labels/tooltips
-  const chartPriceSelectors = [
-    '[id*="chart"] text:not([class*="time"])',
-    '.chart-tooltip',
-    '[class*="price-label"]',
-    '[class*="current-price"]',
-    '[data-price]'
-  ];
-  
-  for (const selector of chartPriceSelectors) {
-    try {
-      const elements = document.querySelectorAll(selector);
-      for (const el of elements) {
-        const text = el.textContent || el.getAttribute('data-price');
-        if (text) {
-          const price = parseFloat(text.replace(/[^0-9.]/g, ''));
-          if (!isNaN(price) && price > 0 && price < 1000000) {
-            console.log('💰 Price detected:', price, 'via', selector);
-            lastPrice = price;
-            return price;
-          }
-        }
-      }
-    } catch (e) {}
-  }
-  
-  // Strategy 2: Look for price in standard UI elements
+  // Strategy 1: Look for price in specific Pocket Option price display elements
   const uiSelectors = [
     '.current-rate',
+    '.currentPrice',
+    '.price-current',
+    '.asset-price',
+    '.trades-chart__price',
+    '.chart__current-price',
     '[class*="current-price"]',
-    '[class*="currentPrice"]', 
+    '[class*="currentPrice"]',
     '[class*="price-current"]',
     '[class*="asset-price"]',
-    '[data-test="current-price"]',
-    '.trades-chart__price',
-    '.chart__current-price'
+    '[data-test="current-price"]'
   ];
   
   for (const selector of uiSelectors) {
     try {
       const el = document.querySelector(selector);
       if (el && el.textContent) {
-        const price = parseFloat(el.textContent.replace(/[^0-9.]/g, ''));
+        const text = el.textContent.trim();
+        // Remove non-numeric characters except dot
+        const price = parseFloat(text.replace(/[^0-9.]/g, ''));
         if (!isNaN(price) && price > 0 && price < 1000000) {
           console.log('💰 Price detected:', price, 'via', selector);
           lastPrice = price;
@@ -114,32 +94,29 @@ function getCurrentPrice() {
     } catch (e) {}
   }
   
-  // Strategy 3: Look for prices in all text elements near chart area
+  // Strategy 2: Look for price in SVG/Chart elements
   try {
-    const chartArea = document.querySelector('[id*="chart"]');
-    if (chartArea) {
-      const allTexts = chartArea.querySelectorAll('text, span, div');
-      for (const el of allTexts) {
-        const text = el.textContent;
-        if (text && text.match(/^\d+\.\d{2,}$/)) {
-          const price = parseFloat(text);
-          if (!isNaN(price) && price > 0 && price < 1000000) {
-            console.log('💰 Price detected:', price, 'via chart text scan');
-            lastPrice = price;
-            return price;
-          }
+    const textElements = document.querySelectorAll('text, span, div');
+    for (const el of textElements) {
+      const text = el.textContent.trim();
+      // Match pattern like 1.14132
+      if (text.match(/^\d+\.\d{4,6}$/)) {
+        const price = parseFloat(text);
+        if (!isNaN(price) && price > 0 && price < 1000000) {
+          console.log('💰 Price detected via pattern match:', price);
+          lastPrice = price;
+          return price;
         }
       }
     }
   } catch (e) {}
   
-  // Strategy 4: Use last known price if available (for continuity)
+  // Strategy 3: Use last known price if failure is recent
   if (lastPrice && priceFailCount < 3) {
     console.warn('⚠️ Using last known price:', lastPrice);
     return lastPrice;
   }
   
-  console.warn('⚠️ Price not found - ensure you are on OTC trading page with active chart');
   return null;
 }
 
@@ -216,22 +193,14 @@ function analyzeCandlePattern(prices) {
 function analyzeMarket(prices) {
   if (prices.length < 50) return { signal: 'WAIT', confidence: 0, scores: {} };
   
-  const scores = {
-    rsi: 0,
-    ema: 0,
-    macd: 0,
-    bollinger: 0,
-    stochastic: 0,
-    momentum: 0,
-    pattern: 0
-  };
+  const scores = { rsi: 0, ema: 0, macd: 0, bollinger: 0, stochastic: 0, momentum: 0, pattern: 0 };
   
-  // RSI (14)
+  // RSI
   const rsi = calculateRSI(prices, 14);
   if (rsi < 35) scores.rsi = 1;
   else if (rsi > 65) scores.rsi = -1;
   
-  // EMA Crossover (5/20)
+  // EMA
   const ema5 = calculateEMA(prices, 5);
   const ema20 = calculateEMA(prices, 20);
   if (ema5 > ema20 * 1.001) scores.ema = 1;
@@ -242,13 +211,13 @@ function analyzeMarket(prices) {
   if (macd > 0) scores.macd = 1;
   else if (macd < 0) scores.macd = -1;
   
-  // Bollinger Bands
+  // Bollinger
   const bb = calculateBollingerBands(prices, 20);
-  const lastPrice = prices[prices.length - 1];
+  const lastP = prices[prices.length - 1];
   if (bb.upper !== bb.lower) {
-    const bbPosition = (lastPrice - bb.lower) / (bb.upper - bb.lower);
-    if (bbPosition < 0.25) scores.bollinger = 1;
-    else if (bbPosition > 0.75) scores.bollinger = -1;
+    const pos = (lastP - bb.lower) / (bb.upper - bb.lower);
+    if (pos < 0.25) scores.bollinger = 1;
+    else if (pos > 0.75) scores.bollinger = -1;
   }
   
   // Stochastic
@@ -261,10 +230,9 @@ function analyzeMarket(prices) {
   if (momentum > 0.5) scores.momentum = 1;
   else if (momentum < -0.5) scores.momentum = -1;
   
-  // Candle Pattern
+  // Pattern
   scores.pattern = analyzeCandlePattern(prices);
   
-  // Calculate total score and confidence
   const totalScore = Object.values(scores).reduce((a, b) => a + b, 0);
   const activeIndicators = Object.values(scores).filter(s => s !== 0).length;
   const confidence = activeIndicators > 0 ? (Math.abs(totalScore) / 7) * 100 : 0;
@@ -273,81 +241,45 @@ function analyzeMarket(prices) {
   if (totalScore >= 3) signal = 'BUY';
   else if (totalScore <= -3) signal = 'SELL';
   
-  console.log('📈 Analysis:', { signal, confidence: confidence.toFixed(1) + '%', totalScore, scores });
-  
   return { signal, confidence, totalScore, scores };
 }
 
 function executeTrade(signal) {
-  // Enhanced button selectors for Pocket Option
   const buttonSelectors = {
-    call: [
-      '[id*="put-call-buttons"] a:has(text("BUY"))',
-      'a[href*="BUY"]',
-      'link:has-text("BUY")',
-      'button[data-direction="call"]',
-      'button[class*="call"]',
-      'button[class*="up"]',
-      '.btn-call',
-      '[data-dir="call"]'
-    ],
-    put: [
-      '[id*="put-call-buttons"] a:has(text("SELL"))',
-      'a[href*="SELL"]',
-      'link:has-text("SELL")',
-      'button[data-direction="put"]',
-      'button[class*="put"]',
-      'button[class*="down"]',
-      '.btn-put',
-      '[data-dir="put"]'
-    ]
+    call: ['button[class*="call"]', 'button[class*="up"]', '.btn-call', '[data-direction="call"]', 'a:has-text("BUY")', 'button:has-text("BUY")'],
+    put: ['button[class*="put"]', 'button[class*="down"]', '.btn-put', '[data-direction="put"]', 'a:has-text("SELL")', 'button:has-text("SELL")']
   };
   
   const selectors = signal === 'BUY' ? buttonSelectors.call : buttonSelectors.put;
   let targetButton = null;
   
-  // First try: exact match for BUY/SELL text
+  // Text search
   try {
-    const allLinks = document.querySelectorAll('a, button');
-    for (const el of allLinks) {
-      const text = el.textContent.trim().toUpperCase();
-      if (signal === 'BUY' && text === 'BUY') {
-        targetButton = el;
-        console.log('🎯 Button found via text match: BUY');
-        break;
-      }
-      if (signal === 'SELL' && text === 'SELL') {
-        targetButton = el;
-        console.log('🎯 Button found via text match: SELL');
+    const allBtns = document.querySelectorAll('button, a');
+    for (const btn of allBtns) {
+      const text = btn.textContent.trim().toUpperCase();
+      if ((signal === 'BUY' && text === 'BUY') || (signal === 'SELL' && text === 'SELL')) {
+        targetButton = btn;
         break;
       }
     }
   } catch (e) {}
   
-  // Second try: use selectors
+  // Selector search
   if (!targetButton) {
-    for (const selector of selectors) {
+    for (const s of selectors) {
       try {
-        targetButton = document.querySelector(selector);
-        if (targetButton) {
-          console.log('🎯 Button found via:', selector);
-          break;
-        }
+        targetButton = document.querySelector(s);
+        if (targetButton) break;
       } catch (e) {}
     }
   }
   
   if (targetButton && config.autoExecute) {
-    try {
-      targetButton.click();
-      console.log(`✅ Executed ${signal} trade`);
-      return true;
-    } catch (e) {
-      console.error(`❌ Error clicking ${signal} button:`, e);
-      return false;
-    }
-  } else {
-    console.error(`❌ ${signal} button not found - manual trading required`);
-    return false;
+    targetButton.click();
+    console.log(`✅ Executed ${signal} trade`);
+    return true;
   }
+  console.error(`❌ ${signal} button not found`);
+  return false;
 }
