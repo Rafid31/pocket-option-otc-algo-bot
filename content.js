@@ -1,10 +1,12 @@
-// Pocket Option OTC Algo Trading Bot - Content Script (FIXED)
-console.log('🚀 OTC Algo Bot loaded - v1.1 FIXED');
+// Pocket Option OTC Algo Trading Bot - Content Script (ENHANCED v1.2)
+console.log('🚀 OTC Algo Bot loaded - v1.2 ENHANCED');
 
 let botActive = false;
 let priceHistory = [];
 let config = { timeframe: 30, confidenceThreshold: 60, tradeAmount: 1, autoExecute: true, telegramBot: '', telegramChat: '' };
 let intervalId = null;
+let lastPrice = null;
+let priceFailCount = 0;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startBot') {
@@ -26,18 +28,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 function startBotLoop() {
   if (intervalId) clearInterval(intervalId);
+  
   intervalId = setInterval(() => {
     if (!botActive) return;
+    
     const price = getCurrentPrice();
     if (price) {
+      priceFailCount = 0;
       priceHistory.push(price);
       if (priceHistory.length > 100) priceHistory.shift();
+      
       if (priceHistory.length >= 50) {
         const analysis = analyzeMarket(priceHistory);
         if (analysis.signal !== 'WAIT' && analysis.confidence >= config.confidenceThreshold) {
           console.log('📊 Signal:', analysis);
           executeTrade(analysis.signal);
         }
+      }
+    } else {
+      priceFailCount++;
+      if (priceFailCount >= 5) {
+        console.error('❌ Failed to get price 5 times. Please check if you are on the OTC trading page.');
       }
     }
   }, config.timeframe * 1000);
@@ -51,8 +62,34 @@ function stopBotLoop() {
 }
 
 function getCurrentPrice() {
-  // Enhanced Pocket Option price selectors
-  const selectors = [
+  // Strategy 1: Look for price in chart labels/tooltips
+  const chartPriceSelectors = [
+    '[id*="chart"] text:not([class*="time"])',
+    '.chart-tooltip',
+    '[class*="price-label"]',
+    '[class*="current-price"]',
+    '[data-price]'
+  ];
+  
+  for (const selector of chartPriceSelectors) {
+    try {
+      const elements = document.querySelectorAll(selector);
+      for (const el of elements) {
+        const text = el.textContent || el.getAttribute('data-price');
+        if (text) {
+          const price = parseFloat(text.replace(/[^0-9.]/g, ''));
+          if (!isNaN(price) && price > 0 && price < 1000000) {
+            console.log('💰 Price detected:', price, 'via', selector);
+            lastPrice = price;
+            return price;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+  
+  // Strategy 2: Look for price in standard UI elements
+  const uiSelectors = [
     '.current-rate',
     '[class*="current-price"]',
     '[class*="currentPrice"]', 
@@ -63,18 +100,46 @@ function getCurrentPrice() {
     '.chart__current-price'
   ];
   
-  for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (el && el.textContent) {
-      const price = parseFloat(el.textContent.replace(/[^0-9.]/g, ''));
-      if (!isNaN(price) && price > 0) {
-        console.log('💰 Price detected:', price, 'via', selector);
-        return price;
+  for (const selector of uiSelectors) {
+    try {
+      const el = document.querySelector(selector);
+      if (el && el.textContent) {
+        const price = parseFloat(el.textContent.replace(/[^0-9.]/g, ''));
+        if (!isNaN(price) && price > 0 && price < 1000000) {
+          console.log('💰 Price detected:', price, 'via', selector);
+          lastPrice = price;
+          return price;
+        }
       }
-    }
+    } catch (e) {}
   }
   
-  console.warn('⚠️ Price not found - check if you are on OTC trading page');
+  // Strategy 3: Look for prices in all text elements near chart area
+  try {
+    const chartArea = document.querySelector('[id*="chart"]');
+    if (chartArea) {
+      const allTexts = chartArea.querySelectorAll('text, span, div');
+      for (const el of allTexts) {
+        const text = el.textContent;
+        if (text && text.match(/^\d+\.\d{2,}$/)) {
+          const price = parseFloat(text);
+          if (!isNaN(price) && price > 0 && price < 1000000) {
+            console.log('💰 Price detected:', price, 'via chart text scan');
+            lastPrice = price;
+            return price;
+          }
+        }
+      }
+    }
+  } catch (e) {}
+  
+  // Strategy 4: Use last known price if available (for continuity)
+  if (lastPrice && priceFailCount < 3) {
+    console.warn('⚠️ Using last known price:', lastPrice);
+    return lastPrice;
+  }
+  
+  console.warn('⚠️ Price not found - ensure you are on OTC trading page with active chart');
   return null;
 }
 
@@ -143,7 +208,7 @@ function calculateMomentum(prices, period = 10) {
 function analyzeCandlePattern(prices) {
   if (prices.length < 3) return 0;
   const [p1, p2, p3] = prices.slice(-3);
-  if (p1 < p2 && p2 < p3) return 1;  // Bullish
+  if (p1 < p2 && p2 < p3) return 1; // Bullish
   if (p1 > p2 && p2 > p3) return -1; // Bearish
   return 0;
 }
@@ -217,42 +282,72 @@ function executeTrade(signal) {
   // Enhanced button selectors for Pocket Option
   const buttonSelectors = {
     call: [
+      '[id*="put-call-buttons"] a:has(text("BUY"))',
+      'a[href*="BUY"]',
+      'link:has-text("BUY")',
       'button[data-direction="call"]',
       'button[class*="call"]',
       'button[class*="up"]',
       '.btn-call',
-      '[data-dir="call"]',
-      'button:has-text("Higher")',
-      'button:has-text("Up")'
+      '[data-dir="call"]'
     ],
     put: [
+      '[id*="put-call-buttons"] a:has(text("SELL"))',
+      'a[href*="SELL"]',
+      'link:has-text("SELL")',
       'button[data-direction="put"]',
       'button[class*="put"]',
       'button[class*="down"]',
       '.btn-put',
-      '[data-dir="put"]',
-      'button:has-text("Lower")',
-      'button:has-text("Down")'
+      '[data-dir="put"]'
     ]
   };
   
   const selectors = signal === 'BUY' ? buttonSelectors.call : buttonSelectors.put;
   let targetButton = null;
   
-  for (const selector of selectors) {
-    targetButton = document.querySelector(selector);
-    if (targetButton) {
-      console.log('🎯 Button found via:', selector);
-      break;
+  // First try: exact match for BUY/SELL text
+  try {
+    const allLinks = document.querySelectorAll('a, button');
+    for (const el of allLinks) {
+      const text = el.textContent.trim().toUpperCase();
+      if (signal === 'BUY' && text === 'BUY') {
+        targetButton = el;
+        console.log('🎯 Button found via text match: BUY');
+        break;
+      }
+      if (signal === 'SELL' && text === 'SELL') {
+        targetButton = el;
+        console.log('🎯 Button found via text match: SELL');
+        break;
+      }
+    }
+  } catch (e) {}
+  
+  // Second try: use selectors
+  if (!targetButton) {
+    for (const selector of selectors) {
+      try {
+        targetButton = document.querySelector(selector);
+        if (targetButton) {
+          console.log('🎯 Button found via:', selector);
+          break;
+        }
+      } catch (e) {}
     }
   }
   
   if (targetButton && config.autoExecute) {
-    targetButton.click();
-    console.log(`✅ Executed ${signal} trade`);
-    return true;
+    try {
+      targetButton.click();
+      console.log(`✅ Executed ${signal} trade`);
+      return true;
+    } catch (e) {
+      console.error(`❌ Error clicking ${signal} button:`, e);
+      return false;
+    }
   } else {
-    console.error(`❌ ${signal} button not found - selectors may need update`);
+    console.error(`❌ ${signal} button not found - manual trading required`);
     return false;
   }
 }
